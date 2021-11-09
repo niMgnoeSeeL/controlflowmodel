@@ -1,0 +1,12 @@
+# vscode config
+.vscode/
+
+# python files
+__pycache__/
+
+# c files
+example/cgidecode/cgi_decode
+*.gcov
+*.gcda
+*.gcno
+
