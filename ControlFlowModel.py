@@ -1,30 +1,28 @@
 import operator
+import string
 import sys
 from functools import reduce
 from itertools import starmap
 from random import choice, randint, random
 from typing import Dict, List, Set, Tuple
 
+import numpy as np
 from sklearn import tree
 
-from Coverage import FunctionCoverageRunner, population_coverage
-from example.python.crash import crashme
-from example.python.triangle import triangle
 from FormulaGenerator import PredicateGenerator
-from Fuzzer import FunctionRunner
+from MutationFuzzer import Mutator
 from graph import Edge, Node
-from GreyboxFuzzer import GreyboxFuzzerRecorder
-from MutationFuzzer import MutationFuzzer, Mutator, PowerSchedule
 
 
 class ControlFlowModel:
-    def __init__(self, record, contcov_graph, coverage_graph, context_map=None):
+    def __init__(self, record, contcov_graph, coverage_graph, runner):
         self._record = record
         self._contcov_graph = contcov_graph
         self._coverage_graph = coverage_graph
-        self._context_map = context_map or {}
+        self._runner = runner
         self._edge_condition = {}
         self._bnodes = None
+        self._mutator = Mutator()
         self._formula_generator = PredicateGenerator()
 
     def set_context_map(self, context_map):
@@ -35,7 +33,39 @@ class ControlFlowModel:
         for node in self._coverage_graph:
             if node.num_child() > 1:
                 self._bnodes.append(node)
-        print(self._bnodes)
+        print("branches:", self._bnodes)
+
+    def identify_call_context(self) -> None:
+        self._call_contexts = set()
+        for path, _ in self._record.items():
+            for cont_cov in path:
+                call_stack, _ = cont_cov
+                for call_context in call_stack.split("-"):
+                    if call_context != "":
+                        self._call_contexts.add(call_context)
+        print("call contexts:", self._call_contexts)
+
+    def mutate_input(self, inp, idx) -> str:
+        # sourcery skip: use-assigned-variable
+        random_chr = inp[idx]
+        while random_chr == inp[idx]:
+            random_chr = self._mutator.generate_random_character()
+        return inp[:idx] + random_chr + inp[idx + 1 :]
+
+    def get_path(self, inp):
+        self._runner.run(inp)
+        return self._runner.trace()
+
+    def get_contcov_bnode_coverage(self, path, context_bnode_labels):
+        contcov_bnodes = {
+            contcov: set()
+            for contcov in path
+            if contcov in context_bnode_labels
+        }
+        for idx, contcov in enumerate(path):
+            if contcov in context_bnode_labels:
+                contcov_bnodes[contcov].add(path[idx + 1])
+        return contcov_bnodes
 
     def get_context_nodes(self, coverage_node) -> Set[Node]:
         return {
@@ -43,6 +73,70 @@ class ControlFlowModel:
             for context_node in self._contcov_graph
             if coverage_node.label == context_node.label[1]
         }
+
+    def get_context_bnode_labels(self):
+        context_bnodes = reduce(
+            set.union, [self.get_context_nodes(bnode) for bnode in self._bnodes]
+        )
+        return {bnode.label for bnode in context_bnodes}
+
+    def model_context(self, inp_sample_size=1, mut_trial=1) -> None:
+        self._context_map = {}
+        # set difference로 차이를 보면, 서로 다른 context에서 cover가 되었을 때, 영향을 미치는 것이 맞지만, 이를 파악하지 못 할 수 있다.
+        # 처음 바뀐 부분으로 차이를 보면, mutate 된 부분이 여러 곳에 영향을 미치는 것을 파악하지 못 할 수 있다.
+        # 우선은 set difference로 가자.
+        context_bnode_labels = self.get_context_bnode_labels()
+        context_bnode_essential_idx = {
+            bnode_label: set() for bnode_label in context_bnode_labels
+        }
+        for path, inputs in self._record.items():
+            print(f"[D] Analyze {path=}")
+            contcov_bnodes = self.get_contcov_bnode_coverage(
+                path, context_bnode_labels
+            )
+            inp_samples = np.random.choice(
+                list(inputs), min(inp_sample_size, len(inputs)), replace=False
+            )
+            for inp in inp_samples:
+                print(f"[D] Sample input: {inp}")
+                for idx in range(len(inp)):
+                    for _ in range(mut_trial):
+                        new_inp = self.mutate_input(inp, idx)
+                        print(f"[D]    New input: {new_inp}")
+                        new_path = self.get_path(new_inp)
+                        new_contcov_bnodes = self.get_contcov_bnode_coverage(
+                            new_path, context_bnode_labels
+                        )
+                        for (
+                            bnode_label,
+                            child_label_set,
+                        ) in contcov_bnodes.items():
+                            if bnode_label not in new_contcov_bnodes:
+                                continue
+                            elif (
+                                child_label_set
+                                != new_contcov_bnodes[bnode_label]
+                            ):
+                                context_bnode_essential_idx[bnode_label].add(
+                                    idx
+                                )
+        callstack_essential_idx = {}
+        for k, v in context_bnode_essential_idx.items():
+            if k[0] == "":
+                continue
+            callstack = tuple(k[0].split("-"))
+            if callstack not in callstack_essential_idx:
+                callstack_essential_idx[callstack] = set()
+            callstack_essential_idx[callstack] = callstack_essential_idx[
+                callstack
+            ].union(v)
+        for k, v in callstack_essential_idx.items():
+            print(f"[D, callstack_essential_idx] {k=} {v=}")
+        # todo: 그래서, 여기서 어떻게 context_map을 만들 수 있나? 아래는 임시 방편.
+        for k, v in callstack_essential_idx.items():
+            self._context_map[k[0]] = range(min(v), max(v) + 1)
+            print(f"[context_map] {k=} {v=}")
+        
 
     def get_input(self, contcov_node) -> Set[str]:
         covering_inputs = set()
@@ -138,9 +232,8 @@ class ControlFlowModel:
                     self._edge_condition[Edge(node, child)] = (None, None)
                     print("No accepts or rejects; skip.")
 
-    
     def get_edge_cond(self):
         return self._edge_condition
-    
+
     def get_context_map(self):
         return self._context_map

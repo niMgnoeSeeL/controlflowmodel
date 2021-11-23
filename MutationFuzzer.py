@@ -14,9 +14,12 @@ class Mutator:
             self.flip_random_character,
         ]
 
+    def generate_random_character(self):
+        return chr(random.randrange(32, 127))
+
     def insert_random_character(self, s):
         pos = random.randint(0, len(s))
-        random_character = chr(random.randrange(32, 127))
+        random_character = self.generate_random_character()
         return s[:pos] + random_character + s[pos:]
 
     def delete_random_character(self, s):
