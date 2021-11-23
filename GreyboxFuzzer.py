@@ -33,7 +33,7 @@ class GreyboxFuzzerRecorder(GreyboxFuzzer):
 
     def run(self, runner: FunctionCoverageRunner):
         result, outcome = super().run(runner)
-        # preserve covered element order -> ordered coverage overage
+        # preserve covered element order -> ordered coverage := overage
         new_overage = tuple(dict.fromkeys(runner.trace()).keys())
         if new_overage not in self.cov_record:
             self.cov_record[new_overage] = set()

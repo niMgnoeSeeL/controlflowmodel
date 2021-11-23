@@ -1,7 +1,6 @@
 
 import operator
-import random
-from random import choice, randint
+from random import choice, randint, random
 
 
 class FormulaGenerator:
