@@ -10,3 +10,5 @@ example/cgidecode/cgi_decode
 *.gcda
 *.gcno
 
+# graph visualization
+Digraph*
