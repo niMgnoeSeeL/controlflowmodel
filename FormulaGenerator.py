@@ -3,7 +3,7 @@ import operator
 from random import choice, randint, random
 
 
-class FormulaGenerator:
+class PredicateGenerator:
     def __init__(self) -> None:
         self.map_op_str = {
             operator.eq: "==",

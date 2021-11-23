@@ -1,5 +1,6 @@
 import operator
 import sys
+from functools import reduce
 from itertools import starmap
 from random import choice, randint, random
 from typing import Dict, List, Set, Tuple
@@ -9,38 +10,62 @@ from sklearn import tree
 from Coverage import FunctionCoverageRunner, population_coverage
 from example.python.crash import crashme
 from example.python.triangle import triangle
-from FormulaGenerator import FormulaGenerator
+from FormulaGenerator import PredicateGenerator
 from Fuzzer import FunctionRunner
+from graph import Edge, Node
 from GreyboxFuzzer import GreyboxFuzzerRecorder
 from MutationFuzzer import MutationFuzzer, Mutator, PowerSchedule
 
 
-
 class ControlFlowModel:
-    def __init__(
-        self,
-        cov_graph: CoverageGraph,
-        record: Dict[Tuple[Tuple[str, int]], Set[str]],
-    ) -> None:
-        self._cov_tree = cov_graph
+    def __init__(self, record, contcov_graph, coverage_graph, context_map=None):
         self._record = record
+        self._contcov_graph = contcov_graph
+        self._coverage_graph = coverage_graph
+        self._context_map = context_map or {}
         self._edge_condition = {}
-        self._context_map = {}
-        self._formula_generator = FormulaGenerator()
+        self._bnodes = None
+        self._formula_generator = PredicateGenerator()
+
+    def set_context_map(self, context_map):
+        self._context_map = context_map
 
     def identify_branch(self) -> None:
         self._bnodes = []
-        for node in self._cov_tree:
+        for node in self._coverage_graph:
             if node.num_child() > 1:
                 self._bnodes.append(node)
         print(self._bnodes)
 
-    def get_covering_inputs(self, node: Node):
+    def get_context_nodes(self, coverage_node) -> Set[Node]:
+        return {
+            context_node
+            for context_node in self._contcov_graph
+            if coverage_node.label == context_node.label[1]
+        }
+
+    def get_input(self, contcov_node) -> Set[str]:
         covering_inputs = set()
-        for cov, inputs in self._record.items():
-            if node.label in cov:
+        for path, inputs in self._record.items():
+            if contcov_node.label in path:
                 covering_inputs = covering_inputs.union(inputs)
         return covering_inputs
+
+    def get_input_in_context(self, contcov_node) -> Set[str]:
+        covering_inputs = self.get_input(contcov_node)
+        call_stack = contcov_node.label[0].split("-")
+        inputs_in_context = set()
+        for inp in covering_inputs:
+            inp_in_context = inp[:]
+            for call_context in call_stack:
+                map_func = (
+                    self._context_map[call_context]
+                    if call_context in self._context_map
+                    else range(len(inp_in_context))
+                )
+                inp_in_context = "".join([inp_in_context[i] for i in map_func])
+            inputs_in_context.add(inp_in_context)
+        return inputs_in_context
 
     def calc_fitness(self, formula, accepts, rejects):
         fitness = 0
@@ -83,57 +108,39 @@ class ControlFlowModel:
             trial += 1
         return gb_formula, gb_formula_str, gb_fitness / input_size
 
-    def model(self) -> None:
-        self.identify_branch()
-
-        for bnode in self._bnodes:
-            pool = self.get_covering_inputs(bnode)
-            for branch in bnode:
-                accepts = self.get_covering_inputs(branch).intersection(pool)
+    def model_condition(self) -> None:
+        if self._bnodes is None:
+            self.identify_branch()
+        for node in self._bnodes:
+            context_nodes = self.get_context_nodes(node)
+            pool = reduce(
+                set.union,
+                [self.get_input_in_context(node) for node in context_nodes],
+            )
+            for child in node:
+                print(f"Modeling {node} -> {child}...", end=" ")
+                context_child = self.get_context_nodes(child)
+                accepts = reduce(
+                    set.union,
+                    [self.get_input_in_context(node) for node in context_child],
+                ).intersection(pool)
                 rejects = pool - accepts
                 if len(accepts) and len(rejects):
                     formula, formula_str, conf = self.estimate_predicate(
                         list(accepts), list(rejects)
                     )
-                    self._edge_condition[Edge(bnode, branch)] = (
+                    self._edge_condition[Edge(node, child)] = (
                         formula_str,
                         conf,
                     )
+                    print(f"formula: <{formula_str}> (conf: {conf})")
                 else:
-                    self._edge_condition[Edge(bnode, branch)] = None, None
+                    self._edge_condition[Edge(node, child)] = (None, None)
+                    print("No accepts or rejects; skip.")
 
-    def __str__(self) -> str:
-        ret = ""
-        for edge, pred in self._edge_condition.items():
-            formula_str, conf = pred
-            ret += f"{edge} := {formula_str} ({conf=})\n"
-        return ret
-
-    __repr__ = __str__
-
-
-if __name__ == "__main__":
-    n = 30000
-    seed_input = "good"
-
-    program_str = sys.argv[1]
-    if program_str == "crash":
-        program = crashme
-    elif program_str == "triangle":
-        program = triangle
-
-    greybox_recorder = GreyboxFuzzerRecorder(
-        [seed_input], Mutator(), PowerSchedule()
-    )
-    greybox_recorder.runs(FunctionCoverageRunner(program), trials=n)
-    record = greybox_recorder.get_record()
-
-    coverage_graph = CoverageGraph()
-    for cov, inputs in record.items():
-        print(f"[Coverage]: {cov}, [Input]: {inputs}")
-        coverage_graph.accept(cov)
-    coverage_graph.print_tree()
-
-    cfm = ControlFlowModel(cov_graph=coverage_graph, record=record)
-    cfm.model()
-    print(cfm)
+    
+    def get_edge_cond(self):
+        return self._edge_condition
+    
+    def get_context_map(self):
+        return self._context_map
