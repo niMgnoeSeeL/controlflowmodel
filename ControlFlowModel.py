@@ -7,11 +7,12 @@ from random import choice, randint, random
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
+from pulp import LpMinimize, LpProblem, LpStatus, LpVariable
 from sklearn import tree
 
 from FormulaGenerator import PredicateGenerator
-from MutationFuzzer import Mutator
 from graph import Edge, Node
+from MutationFuzzer import Mutator
 
 
 class ControlFlowModel:
@@ -80,6 +81,57 @@ class ControlFlowModel:
         )
         return {bnode.label for bnode in context_bnodes}
 
+    def optimize_context_map(self, callstack_essential_idx):
+        lowbound, upbound = 0, max(reduce(
+            set.union, callstack_essential_idx.values()
+        )) + 1
+        range_var_map = {}
+        for call_stack, _ in callstack_essential_idx.items():
+            for call_context in call_stack:
+                if call_context not in range_var_map:
+                    lbvar = LpVariable(
+                        "-".join([call_context, "lb"]), lowbound, upbound
+                    )
+                    ubvar = LpVariable(
+                        "-".join([call_context, "ub"]), lowbound, upbound
+                    )
+                    range_var_map[call_context] = (lbvar, ubvar)
+        print(range_var_map)
+        prob = LpProblem("context map prob", LpMinimize)
+
+        # Minimize equation
+        opt_equ = sum(
+            ubvar - lbvar for _, (lbvar, ubvar) in range_var_map.items()
+        )
+        prob += opt_equ
+
+        # Constraints
+        for _, (lbvar, ubvar) in range_var_map.items():
+            prob += lbvar <= ubvar
+
+        for call_stack, essential_idx in callstack_essential_idx.items():
+            if len(call_stack) > 0:
+                min_range = max(essential_idx) - min(essential_idx) + 1
+                base_lb, base_ub = range_var_map[call_stack[0]]
+                prob += (base_ub - base_lb) >= min_range
+
+                opt_lb, opt_ub = 0, 0
+                last_lb, last_ub = range_var_map[call_stack[-1]]
+                for call_context in call_stack[:-1]:
+                    lbvar, ubvar = range_var_map[call_context]
+                    opt_lb += lbvar
+                    opt_ub += lbvar
+                opt_lb += last_lb
+                opt_ub += last_ub
+                prob += opt_lb <= min(essential_idx)
+                prob += opt_ub >= max(essential_idx) + 1
+        prob.writeLP("contextMapProb.lp")
+        prob.solve()
+        return {
+            call_stack: range(int(lbvar.varValue), int(ubvar.varValue))
+            for call_stack, (lbvar, ubvar) in range_var_map.items()
+        }
+
     def model_context(self, inp_sample_size=1, mut_trial=1) -> None:
         self._context_map = {}
         # set difference로 차이를 보면, 서로 다른 context에서 cover가 되었을 때, 영향을 미치는 것이 맞지만, 이를 파악하지 못 할 수 있다.
@@ -132,11 +184,9 @@ class ControlFlowModel:
             ].union(v)
         for k, v in callstack_essential_idx.items():
             print(f"[D, callstack_essential_idx] {k=} {v=}")
-        # todo: 그래서, 여기서 어떻게 context_map을 만들 수 있나? 아래는 임시 방편.
-        for k, v in callstack_essential_idx.items():
-            self._context_map[k[0]] = range(min(v), max(v) + 1)
+        self._context_map = self.optimize_context_map(callstack_essential_idx)
+        for k, v in self._context_map.items():
             print(f"[context_map] {k=} {v=}")
-        
 
     def get_input(self, contcov_node) -> Set[str]:
         covering_inputs = set()
