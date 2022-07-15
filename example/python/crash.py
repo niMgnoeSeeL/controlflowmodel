@@ -17,3 +17,7 @@ def crashme3(s):
         crashme(s[11:15])
     else:
         raise Exception("Wrong input.")
+
+
+crashme_tup = (crashme, ["good"])
+crashme3_tup = (crashme3, ["000abcdefghijkl", "100bad!asdfqwer", "010asdfbad!qwer", "001asdfqwerbad!"])

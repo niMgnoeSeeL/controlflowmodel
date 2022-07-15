@@ -93,7 +93,7 @@ class Graph:
                 queue.append(child)
             traversed_nodes.add(curr_node)
 
-    def print_graph(self):
+    def print_graph(self, outfile: str):
         dot = Digraph()
         node_dict = {}
         for idx, node in enumerate(self.nodes):
@@ -105,8 +105,7 @@ class Graph:
                 dot.edge(node_dict[node], "N-1")
             for child in node:
                 dot.edge(node_dict[node], node_dict[child])
-        print(dot.source)
-        dot.render(view=True)
+        dot.render(view=True, filename=outfile)
 
     def __iter__(self):
         return iter(self.nodes)

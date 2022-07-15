@@ -1,5 +1,3 @@
-import operator
-import string
 import sys
 from functools import reduce
 from itertools import starmap
@@ -82,9 +80,12 @@ class ControlFlowModel:
         return {bnode.label for bnode in context_bnodes}
 
     def optimize_context_map(self, callstack_essential_idx):
-        lowbound, upbound = 0, max(reduce(
-            set.union, callstack_essential_idx.values()
-        )) + 1
+        if len(callstack_essential_idx) == 0:
+            return {}
+        lowbound, upbound = (
+            0,
+            max(reduce(set.union, callstack_essential_idx.values())) + 1,
+        )
         range_var_map = {}
         for call_stack, _ in callstack_essential_idx.items():
             for call_context in call_stack:
@@ -96,7 +97,7 @@ class ControlFlowModel:
                         "-".join([call_context, "ub"]), lowbound, upbound
                     )
                     range_var_map[call_context] = (lbvar, ubvar)
-        print(range_var_map)
+        # print(range_var_map)
         prob = LpProblem("context map prob", LpMinimize)
 
         # Minimize equation
@@ -110,7 +111,7 @@ class ControlFlowModel:
             prob += lbvar <= ubvar
 
         for call_stack, essential_idx in callstack_essential_idx.items():
-            if len(call_stack) > 0:
+            if len(call_stack) > 0 and len(essential_idx) > 0:
                 min_range = max(essential_idx) - min(essential_idx) + 1
                 base_lb, base_ub = range_var_map[call_stack[0]]
                 prob += (base_ub - base_lb) >= min_range
@@ -126,6 +127,7 @@ class ControlFlowModel:
                 prob += opt_lb <= min(essential_idx)
                 prob += opt_ub >= max(essential_idx) + 1
         prob.writeLP("contextMapProb.lp")
+        # todo: Remove output
         prob.solve()
         return {
             call_stack: range(int(lbvar.varValue), int(ubvar.varValue))
@@ -142,7 +144,7 @@ class ControlFlowModel:
             bnode_label: set() for bnode_label in context_bnode_labels
         }
         for path, inputs in self._record.items():
-            print(f"[D] Analyze {path=}")
+            # print(f"[D] Analyze {path=}")
             contcov_bnodes = self.get_contcov_bnode_coverage(
                 path, context_bnode_labels
             )
@@ -150,11 +152,11 @@ class ControlFlowModel:
                 list(inputs), min(inp_sample_size, len(inputs)), replace=False
             )
             for inp in inp_samples:
-                print(f"[D] Sample input: {inp}")
+                # print(f"[D] Sample input: {inp}")
                 for idx in range(len(inp)):
                     for _ in range(mut_trial):
                         new_inp = self.mutate_input(inp, idx)
-                        print(f"[D]    New input: {new_inp}")
+                        # print(f"[D]    New input: {new_inp}")
                         new_path = self.get_path(new_inp)
                         new_contcov_bnodes = self.get_contcov_bnode_coverage(
                             new_path, context_bnode_labels
@@ -182,8 +184,8 @@ class ControlFlowModel:
             callstack_essential_idx[callstack] = callstack_essential_idx[
                 callstack
             ].union(v)
-        for k, v in callstack_essential_idx.items():
-            print(f"[D, callstack_essential_idx] {k=} {v=}")
+        # for k, v in callstack_essential_idx.items():
+        #     print(f"[D, callstack_essential_idx] {k=} {v=}")
         self._context_map = self.optimize_context_map(callstack_essential_idx)
         for k, v in self._context_map.items():
             print(f"[context_map] {k=} {v=}")
@@ -207,7 +209,15 @@ class ControlFlowModel:
                     if call_context in self._context_map
                     else range(len(inp_in_context))
                 )
-                inp_in_context = "".join([inp_in_context[i] for i in map_func])
+                # Since sibiling methods requires further range then it is
+                # specified in the current method, we only consider the minimum
+                # range and keep all subsequent inputs from minimum range
+                if len(map_func) > 0:
+                    inp_in_context = inp_in_context[min(map_func) :]
+                else:
+                    # I don't know which case is this.
+                    pass
+                # old: inp_in_context = "".join([inp_in_context[i] for i in map_func])
             inputs_in_context.add(inp_in_context)
         return inputs_in_context
 
@@ -219,9 +229,7 @@ class ControlFlowModel:
             fitness += int(not formula(inp)) * 2 - 1
         return fitness
 
-    def estimate_predicate(
-        self, accepts: List, rejects: List, max_trial=100000
-    ):
+    def estimate_predicate(self, accepts: List, rejects: List, max_trial=100):
         input_size = len(accepts + rejects)
         gb_fitness, gb_formula, gb_formula_str = -sys.maxsize, None, None
         trial = 0
@@ -250,9 +258,15 @@ class ControlFlowModel:
             if fitness == input_size:
                 break
             trial += 1
-        return gb_formula, gb_formula_str, gb_fitness / input_size
+        return (
+            gb_formula,
+            gb_formula_str,
+            gb_fitness / input_size,
+            trial,
+            max_trial,
+        )
 
-    def model_condition(self) -> None:
+    def model_condition(self, max_trial=100) -> None:
         if self._bnodes is None:
             self.identify_branch()
         for node in self._bnodes:
@@ -270,14 +284,22 @@ class ControlFlowModel:
                 ).intersection(pool)
                 rejects = pool - accepts
                 if len(accepts) and len(rejects):
-                    formula, formula_str, conf = self.estimate_predicate(
-                        list(accepts), list(rejects)
+                    (
+                        formula,
+                        formula_str,
+                        conf,
+                        trial,
+                        max_trial,
+                    ) = self.estimate_predicate(
+                        list(accepts), list(rejects), max_trial
                     )
                     self._edge_condition[Edge(node, child)] = (
                         formula_str,
                         conf,
                     )
-                    print(f"formula: <{formula_str}> (conf: {conf})")
+                    print(
+                        f"formula: <{formula_str}> (conf: {conf}, trial: ({trial} / {max_trial}))"
+                    )
                 else:
                     self._edge_condition[Edge(node, child)] = (None, None)
                     print("No accepts or rejects; skip.")

@@ -9,3 +9,5 @@ def count(s):
             return prev_cnt + 1
         else:
             return prev_cnt
+
+count_tup = (count, ["hello 456"])

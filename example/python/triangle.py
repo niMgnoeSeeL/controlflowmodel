@@ -41,3 +41,7 @@ def triangle3(s):
         else:
             result = FAIL
     return result
+
+
+triangle_tup = (triangle, ["356"])
+triangle3_tup = (triangle3, ["00012345good", "111123456bad"])
